@@ -24,6 +24,51 @@ COVERLETTER_MARKER = "<!-- open edx coverletter -->"
 
 
 @celery.task
+def pull_request_comment(comment_event):
+    """
+    Process a comment on a pull request.
+    """
+    # Creates object that works with get_jira_issue_key, may want to refactor that
+    # function later.
+    repo = comment_event["repository"]["name"]
+    issue_number = comment_event["issue"]["number"]
+
+    pr = {"base": {"repo": {"full_name": repo}}, "number": issue_number }
+    issue_key = get_jira_issue_key(pr)
+
+    # Currently we stop quietly if there's no pre-existing ticket in OSPR
+    if not issue_key:
+        msg = "No OSPR ticket for PR #{num}".format(num=issue_number,)
+        logger.info(msg)
+        return None, False
+
+    triaged_issue = issue_to_triage(issue_key) # Move JIRA ticket to triage
+
+    if not triaged_issue:
+        msg = "Unable to move PR #{num} to 'Needs Triage on Jira'".format(num=issue_number,)
+        logger.info(msg)
+        return None, False
+
+    # Add the "Needs Triage" label to the PR on Github
+    issue_url = "/repos/{repo}/issues/{num}".format(repo=repo, num=issue_number)
+    label_resp = github.patch(issue_url, data=json.dumps({"labels": ["needs triage", "open-source-contribution"]}))
+    label_resp.raise_for_status()
+
+    # Comment on Github
+    comment = {
+        "body": "Thanks for the nudge! Your pull request has been added to our list for review.  You can see " + \
+            "your ticket on JIRA here: " + str(triaged_issue),
+    }
+    url = "/repos/{repo}/issues/{num}/comments".format(
+        repo=repo, num=issue_number,
+    )
+    comment_resp = github.post(url, json=comment)
+    comment_resp.raise_for_status()
+
+    return issue_key, True
+
+
+@celery.task
 def pull_request_opened(pull_request, ignore_internal=True, check_contractor=True):
     """
     Process a pull request. This is called when a pull request is opened, or
@@ -316,7 +361,6 @@ def rescan_repository(self, repo):
     if created:
         info["created"] = created
     return info
-
 
 def get_jira_issue_key(pull_request):
     me = github_whoami()
