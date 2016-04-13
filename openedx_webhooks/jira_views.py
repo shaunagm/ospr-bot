@@ -170,6 +170,36 @@ def should_transition(issue):
 
     return False
 
+# Moves a given Jira issue to "Needs Triage".  Automatically called when "please review"
+# comment left on PR.  May need refactoring (lots of c/p from issue_opened)
+def issue_to_triage(key):
+    issue = get_jira_issue(key)
+    sentry.client.extra_context({"issue": issue})
+    issue_url = URLObject(issue["self"])
+
+    transitions_url = issue_url.with_path(issue_url.path + "/transitions")
+    transitions_resp = jira_get(transitions_url)
+    transitions_resp.raise_for_status()
+    transitions = {t["name"]: t["id"] for t in transitions_resp.json()["transitions"]}
+
+    # I don't entirely understand how Jira transitions work, so it's possible this could
+    # fail because the issue is already in 'Needs triage', which is a case we might want
+    # to handle differently.
+
+    if "Needs Triage" in transitions:
+        new_status = "Needs Triage"
+        body = {
+            "transition": {
+                "id": transitions[new_status],
+            }
+        }
+        transition_resp = jira.post(transitions_url, json=body)
+        transition_resp.raise_for_status()
+        return issue_url
+    else:
+        return False
+
+
 
 def issue_opened(issue):
     sentry.client.extra_context({"issue": issue})
