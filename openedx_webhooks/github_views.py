@@ -25,7 +25,6 @@ from openedx_webhooks.tasks.github import (
 
 github_bp = Blueprint('github_views', __name__)
 
-
 @github_bp.route("/pr", methods=("POST",))
 def pull_request():
     """
@@ -200,26 +199,30 @@ def install():
     else:
         repos = get_repos_file().keys()
 
-    api_url = url_for("github_views.pull_request", _external=True)
+    # All previous webhooks appear to be for pull requests, so we need to abstract this out a bit
+    pr_api_obj = {"hook_type": "pull_request", "url": url_for("github_views.pull_request", _external=True)}
+    comment_api_obj = {"hook_type": "issue_comment", "url": url_for("github_views.commit_comment", _external=True)}
     success = []
     failed = []
     for repo in repos:
         url = "/repos/{repo}/hooks".format(repo=repo)
-        body = {
-            "name": "web",
-            "events": ["pull_request"],
-            "config": {
-                "url": api_url,
-                "content_type": "json",
-            }
-        }
-        sentry.client.extra_context({"repo": repo, "body": body})
 
-        hook_resp = github.post(url, json=body)
-        if hook_resp.ok:
-            success.append(repo)
-        else:
-            failed.append((repo, hook_resp.text))
+        for api_obj in [pr_api_obj, comment_api_obj]:  # Github only lets you create one webhook at a time
+            body = {
+                "name": "web",
+                "events": [api_obj["hook_type"]],
+                "config": {
+                    "url": api_obj["url"],
+                    "content_type": "json",
+                }
+            }
+            sentry.client.extra_context({"repo": repo, "body": body})
+
+            hook_resp = github.post(url, json=body)
+            if hook_resp.ok:
+                success.append(repo)
+            else:
+                failed.append((repo, hook_resp.text))
 
     if failed:
         resp = make_response(json.dumps(failed), 502)
