@@ -25,6 +25,42 @@ from openedx_webhooks.tasks.github import (
 
 github_bp = Blueprint('github_views', __name__)
 
+# Adapted from pull_request below, may need additional customization
+@github_bp.route("/cc", methods=("POST",))
+def commit_comment():
+    """
+    Process a `IssueCommentEvent`_ from Github.
+
+    .. _IssueCommentEvent: https://developer.github.com/v3/activity/events/types/#issuecommentevent
+    """
+    try:
+        event = request.get_json()
+    except ValueError:
+        raise ValueError("Invalid JSON from Github: {data}".format(data=request.data))
+    sentry.client.extra_context({"event": event})
+
+    # Not sure this is correct, Github API is patchy - incorporating spec from here:
+    # https://developer.github.com/v3/issues/#list-issue
+    if "pull_request" not in event["issue"].keys():
+        msg = "Issue {issue} in repo {repo} not a pull request".format(issue=event["issue"]["id"],
+            repo=event["repository"]["name"])
+        return msg, 200
+
+    # This logic may belong in github.py - do we want to create a status_url, or just return a msg?
+    if "please review" not in event["comment"]["body"].lower():
+        msg = "Comment {comment} on issue {issue} in repo {repo} is not review request".format(comment=event["comment"]["id"],
+            issue=event["issue"]["id"], repo=event["repository"]["name"])
+        return msg, 200
+
+    result = pull_request_comment.delay(event, wsgi_environ=minimal_wsgi_environ())
+
+    status_url = url_for("tasks.status", task_id=result.id, _external=True)
+    resp = jsonify({"message": "queued", "status_url": status_url})
+    resp.status_code = 202
+    resp.headers["Location"] = status_url
+    return resp
+
+
 @github_bp.route("/pr", methods=("POST",))
 def pull_request():
     """
